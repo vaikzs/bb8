@@ -92,6 +92,8 @@ pub struct Builder<M: ManageConnection> {
     pub(crate) reap_all_idle_connections: bool,
     /// The duration to wait to start a connection before giving up.
     pub(crate) connection_timeout: Duration,
+    /// Enable/disable automatic retries on connection creation.
+    pub(crate) retry_connection: bool,
     /// The error sink.
     pub(crate) error_sink: Box<dyn ErrorSink<M::Error>>,
     /// The time interval used to wake up and reap connections.
@@ -111,6 +113,7 @@ impl<M: ManageConnection> Default for Builder<M> {
             idle_timeout: Some(Duration::from_secs(10 * 60)),
             reap_all_idle_connections: true,
             connection_timeout: Duration::from_secs(30),
+            retry_connection: true,
             error_sink: Box::new(NopErrorSink),
             reaper_rate: Duration::from_secs(30),
             connection_customizer: None,
@@ -123,14 +126,20 @@ impl<M: ManageConnection> Builder<M> {
     /// Constructs a new `Builder`.
     ///
     /// Parameters are initialized with their default values.
-    pub fn new() -> Builder<M> {
-        Default::default()
+    #[must_use]
+    pub fn new() -> Self {
+        Builder::default()
     }
 
     /// Sets the maximum number of connections managed by the pool.
     ///
     /// Defaults to 10.
-    pub fn max_size(mut self, max_size: u32) -> Builder<M> {
+    ///
+    /// # Panics
+    ///
+    /// Will panic if `max_size` is 0.
+    #[must_use]
+    pub fn max_size(mut self, max_size: u32) -> Self {
         assert!(max_size > 0, "max_size must be greater than zero!");
         self.max_size = max_size;
         self
@@ -142,7 +151,8 @@ impl<M: ManageConnection> Builder<M> {
     /// connections at all times, while respecting the value of `max_size`.
     ///
     /// Defaults to None.
-    pub fn min_idle(mut self, min_idle: Option<u32>) -> Builder<M> {
+    #[must_use]
+    pub fn min_idle(mut self, min_idle: Option<u32>) -> Self {
         self.min_idle = min_idle;
         self
     }
@@ -151,7 +161,8 @@ impl<M: ManageConnection> Builder<M> {
     /// `ManageConnection::is_valid` before it is provided to a pool user.
     ///
     /// Defaults to true.
-    pub fn test_on_check_out(mut self, test_on_check_out: bool) -> Builder<M> {
+    #[must_use]
+    pub fn test_on_check_out(mut self, test_on_check_out: bool) -> Self {
         self.test_on_check_out = test_on_check_out;
         self
     }
@@ -161,13 +172,19 @@ impl<M: ManageConnection> Builder<M> {
     /// If set, connections will be closed at the next reaping after surviving
     /// past this duration.
     ///
-    /// If a connection reachs its maximum lifetime while checked out it will be
+    /// If a connection reaches its maximum lifetime while checked out it will be
     /// closed when it is returned to the pool.
     ///
     /// Defaults to 30 minutes.
-    pub fn max_lifetime(mut self, max_lifetime: Option<Duration>) -> Builder<M> {
-        assert!(
-            max_lifetime != Some(Duration::from_secs(0)),
+    ///
+    /// # Panics
+    ///
+    /// Will panic if `max_lifetime` is 0.
+    #[must_use]
+    pub fn max_lifetime(mut self, max_lifetime: Option<Duration>) -> Self {
+        assert_ne!(
+            max_lifetime,
+            Some(Duration::from_secs(0)),
             "max_lifetime must be greater than zero!"
         );
         self.max_lifetime = max_lifetime;
@@ -180,9 +197,15 @@ impl<M: ManageConnection> Builder<M> {
     /// next reaping after remaining idle past this duration.
     ///
     /// Defaults to 10 minutes.
-    pub fn idle_timeout(mut self, idle_timeout: Option<Duration>) -> Builder<M> {
-        assert!(
-            idle_timeout != Some(Duration::from_secs(0)),
+    ///
+    /// # Panics
+    ///
+    /// Will panic if `idle_timeout` is 0.
+    #[must_use]
+    pub fn idle_timeout(mut self, idle_timeout: Option<Duration>) -> Self {
+        assert_ne!(
+            idle_timeout,
+            Some(Duration::from_secs(0)),
             "idle_timeout must be greater than zero!"
         );
         self.idle_timeout = idle_timeout;
@@ -209,7 +232,12 @@ impl<M: ManageConnection> Builder<M> {
     /// resolving with an error.
     ///
     /// Defaults to 30 seconds.
-    pub fn connection_timeout(mut self, connection_timeout: Duration) -> Builder<M> {
+    ///
+    /// # Panics
+    ///
+    /// Will panic if `connection_timeout` is 0.
+    #[must_use]
+    pub fn connection_timeout(mut self, connection_timeout: Duration) -> Self {
         assert!(
             connection_timeout > Duration::from_secs(0),
             "connection_timeout must be non-zero"
@@ -218,27 +246,44 @@ impl<M: ManageConnection> Builder<M> {
         self
     }
 
+    /// Instructs the pool to automatically retry connection creation if it fails, until the `connection_timeout` has expired.
+    ///
+    /// Useful for transient connectivity errors like temporary DNS resolution failure
+    /// or intermittent network failures. Some applications however are smart enough to
+    /// know that the server is down and retries won't help (and could actually hurt recovery).
+    /// In that case, it's better to disable retries here and let the pool error out.
+    ///
+    /// Defaults to enabled.
+    #[must_use]
+    pub fn retry_connection(mut self, retry: bool) -> Self {
+        self.retry_connection = retry;
+        self
+    }
+
     /// Set the sink for errors that are not associated with any particular operation
     /// on the pool. This can be used to log and monitor failures.
     ///
     /// Defaults to `NopErrorSink`.
-    pub fn error_sink(mut self, error_sink: Box<dyn ErrorSink<M::Error>>) -> Builder<M> {
+    #[must_use]
+    pub fn error_sink(mut self, error_sink: Box<dyn ErrorSink<M::Error>>) -> Self {
         self.error_sink = error_sink;
         self
     }
 
     /// Used by tests
     #[allow(dead_code)]
-    pub fn reaper_rate(mut self, reaper_rate: Duration) -> Builder<M> {
+    #[must_use]
+    pub fn reaper_rate(mut self, reaper_rate: Duration) -> Self {
         self.reaper_rate = reaper_rate;
         self
     }
 
     /// Set the connection customizer to customize newly checked out connections
+    #[must_use]
     pub fn connection_customizer(
         mut self,
         connection_customizer: Box<dyn CustomizeConnection<M::Connection, M::Error>>,
-    ) -> Builder<M> {
+    ) -> Self {
         self.connection_customizer = Some(connection_customizer);
         self
     }
@@ -295,7 +340,7 @@ pub trait ManageConnection: Sized + Send + Sync + 'static {
 /// A trait which provides functionality to initialize a connection
 #[async_trait]
 pub trait CustomizeConnection<C: Send + 'static, E: 'static>:
-    std::fmt::Debug + Send + Sync + 'static
+    fmt::Debug + Send + Sync + 'static
 {
     /// Called with connections immediately after they are returned from
     /// `ManageConnection::connect`.
@@ -350,7 +395,7 @@ where
 {
     type Target = M::Connection;
 
-    fn deref(&self) -> &M::Connection {
+    fn deref(&self) -> &Self::Target {
         &self.conn.as_ref().unwrap().conn
     }
 }
@@ -379,7 +424,7 @@ where
     M: ManageConnection,
 {
     fn drop(&mut self) {
-        self.pool.as_ref().put_back(self.conn.take())
+        self.pool.as_ref().put_back(self.conn.take());
     }
 }
 
@@ -398,7 +443,7 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            RunError::User(ref err) => write!(f, "{}", err),
+            RunError::User(ref err) => write!(f, "{err}"),
             RunError::TimedOut => write!(f, "Timed out in bb8"),
         }
     }
