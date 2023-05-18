@@ -32,7 +32,7 @@ where
             if let Some(shared) = s.upgrade() {
                 let start = Instant::now() + shared.statics.reaper_rate;
                 let interval = interval_at(start.into(), shared.statics.reaper_rate);
-                schedule_reaping(interval, s);
+                // schedule_reaping(interval, s);
             }
         }
 
